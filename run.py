@@ -36,28 +36,54 @@ def safe_get(info, key):
 def fetch_ticker_data(ticker, sector_map):
     t = yf.Ticker(ticker)
     info = t.info if hasattr(t, "info") else {}
-    # yfinance sometimes has 'ebitda' key on info
-    ebitda = safe_get(info, "ebitda")
+
+    # --- Market values ---
     market_cap = safe_get(info, "marketCap")
-    total_debt = safe_get(info, "totalDebt") or safe_get(info, "totalDebt")
+    total_debt = (
+        safe_get(info, "totalDebt")
+        or safe_get(info, "longTermDebt")
+        or safe_get(info, "shortLongTermDebt")
+    )
     cash = (
         safe_get(info, "totalCash")
         or safe_get(info, "cash")
         or safe_get(info, "totalCash")
+        or safe_get(info, "CashAndCashEquivalents")
+        or safe_get(info, "CashAndCashEquivalentsIncludingRestrictedCash")
     )
     shares = safe_get(info, "sharesOutstanding")
     price = safe_get(info, "regularMarketPrice") or (
         t.history(period="1d")["Close"][-1] if len(t.history(period="1d")) > 0 else None
     )
 
-    # fallback: try to compute EBITDA from financials if info missing
+    # --- Try to compute TTM EBITDA ---
+    ebitda = None
+    try:
+        qfin = t.quarterly_financials
+        if not qfin.empty:
+            # Try both "EBITDA" spellings
+            idx = None
+            for candidate in ["EBITDA", "Ebitda"]:
+                if candidate in qfin.index:
+                    idx = candidate
+                    break
+            if idx:
+                # Take last 4 quarters = trailing 12 months
+                ebitda = float(qfin.loc[idx].iloc[:4].sum())
+    except Exception:
+        pass
+
+    # fallback: yfinance info field or annual financials
+    if ebitda is None:
+        ebitda = safe_get(info, "ebitda")
     if ebitda is None:
         try:
-            # yfinance Ticker.quarterly_financials/financials sometimes contain 'EBITDA' index; try to read
             fin = t.financials
-            if "Ebitda" in fin.index or "EBITDA" in fin.index:
-                idx = "Ebitda" if "Ebitda" in fin.index else "EBITDA"
-                ebitda = float(fin.loc[idx].iloc[0])
+            if not fin.empty:
+                for candidate in ["EBITDA", "Ebitda"]:
+                    if candidate in fin.index:
+                        ebitda = float(fin.loc[candidate].iloc[0])
+                        break
         except Exception:
             ebitda = None
 
